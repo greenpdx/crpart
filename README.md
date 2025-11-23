@@ -221,100 +221,154 @@ The tool uses **512-byte sectors** for all calculations with **2048-sector align
 - **Alignment Boundary**: 2048 sectors (1MB)
 - **Alignment Bytes**: 2048 × 512 = 1,048,576 bytes (1MB)
 
+#### Core Alignment Formula
+
+All partition boundaries use this alignment function:
+
+```
+align_sector(S) = ((S + 2047) ÷ 2048) × 2048
+```
+
+Where:
+- `S` = sector number to align
+- `÷` = integer division (rounds down)
+- Result is next sector aligned on 2048 boundary
+
+**Example:** align_sector(33,554,432)
+```
+= ((33,554,432 + 2047) ÷ 2048) × 2048
+= (33,556,479 ÷ 2048) × 2048
+= 16,385 × 2048
+= 33,556,480
+```
+
 #### Partition Sizing Algorithm
 
 **1. Root Partition Shrink:**
 ```
-User specifies: -r 16G
+Given: User specifies -r 16G
+       root_start = 2048 (existing boot partition end + 1)
 
-Step 1: Convert to bytes
-  root_size_bytes = 16 × 1024³ = 17,179,869,184 bytes
+Convert to sectors:
+  root_size_sectors = (16 × 1024³) ÷ 512 = 33,554,432 sectors
 
-Step 2: Convert to sectors
-  root_size_sectors = 17,179,869,184 ÷ 512 = 33,554,432 sectors
+Calculate aligned end:
+  root_end_raw = root_start + root_size_sectors - 1
+  root_end = align_sector(root_end_raw + 1) - 1
 
-Step 3: Calculate aligned end boundary
-  root_start = (existing partition start, e.g., 2048)
-  root_end_raw = root_start + root_size_sectors
-  root_end_aligned = align_down(root_end_raw) - 1
+Formula:
+  root_end = ((root_start + root_size_sectors + 2047) ÷ 2048) × 2048 - 1
 
-  align_down(sector) = (sector ÷ 2048) × 2048
-
-  Example: If root_end_raw = 33,556,480
-    aligned = (33,556,480 ÷ 2048) × 2048 = 33,554,432
-    root_end = 33,554,432 - 1 = 33,554,431
+Example:
+  root_end = ((2048 + 33,554,432 + 2047) ÷ 2048) × 2048 - 1
+           = (33,558,527 ÷ 2048) × 2048 - 1
+           = 16,386 × 2048 - 1
+           = 33,558,528 - 1
+           = 33,558,527
 ```
 
-**2. Swap Partition (if specified):**
+**2. Swap Partition (if specified with -s):**
 ```
-User specifies: -s 8G
+Given: User specifies -s 8G
+       prev_end = root_end (from previous partition)
 
-Step 1: Convert to sectors
+Convert to sectors:
   swap_size_sectors = (8 × 1024³) ÷ 512 = 16,777,216 sectors
 
-Step 2: Align start on 2048 boundary
-  swap_start = align_up(root_end + 1)
+Calculate swap boundaries:
+  swap_start = align_sector(prev_end + 1)
+  swap_end = align_sector(swap_start + swap_size_sectors) - 1
 
-  align_up(sector) = ((sector + 2048 - 1) ÷ 2048) × 2048
+Formulas:
+  swap_start = ((prev_end + 1 + 2047) ÷ 2048) × 2048
+  swap_end = ((swap_start + swap_size_sectors + 2047) ÷ 2048) × 2048 - 1
 
-  Example: If root_end = 33,554,431
-    swap_start_raw = 33,554,432
-    swap_start = ((33,554,432 + 2047) ÷ 2048) × 2048
-               = (33,556,479 ÷ 2048) × 2048
-               = 16,385 × 2048 = 33,556,480
+Example (prev_end = 33,558,527):
+  swap_start = ((33,558,527 + 1 + 2047) ÷ 2048) × 2048
+             = (33,560,575 ÷ 2048) × 2048
+             = 16,387 × 2048
+             = 33,560,576
 
-Step 3: Align end on 2048 boundary
-  swap_end_raw = swap_start + swap_size_sectors
-  swap_end = align_up(swap_end_raw) - 1
-
-  Example: swap_end_raw = 33,556,480 + 16,777,216 = 50,333,696
-    aligned = ((50,333,696 + 2047) ÷ 2048) × 2048
-            = 50,333,696 (already aligned)
-    swap_end = 50,333,696 - 1 = 50,333,695
+  swap_end = ((33,560,576 + 16,777,216 + 2047) ÷ 2048) × 2048 - 1
+           = (50,339,839 ÷ 2048) × 2048 - 1
+           = 24,581 × 2048 - 1
+           = 50,341,888 - 1
+           = 50,341,887
 ```
 
-**3. /var Partition (if specified):**
+**3. /var Partition (if specified with -v):**
 ```
-User specifies: -v 16G
+Given: User specifies -v 16G
+       prev_end = swap_end (or root_end if no swap)
 
-Step 1: Convert to sectors
+Convert to sectors:
   var_size_sectors = (16 × 1024³) ÷ 512 = 33,554,432 sectors
 
-Step 2: Start after previous partition (swap or root)
-  If swap exists:
-    var_start = align_up(swap_end + 1)
-  Else:
-    var_start = align_up(root_end + 1)
+Calculate /var boundaries:
+  var_start = align_sector(prev_end + 1)
+  var_end = align_sector(var_start + var_size_sectors) - 1
 
-  Example with swap: var_start = align_up(50,333,696)
-    = ((50,333,696 + 2047) ÷ 2048) × 2048
-    = 50,333,696 (already aligned)
+Formulas:
+  var_start = ((prev_end + 1 + 2047) ÷ 2048) × 2048
+  var_end = ((var_start + var_size_sectors + 2047) ÷ 2048) × 2048 - 1
 
-Step 3: Align end
-  var_end = align_up(var_start + var_size_sectors) - 1
+Example (prev_end = 50,341,887):
+  var_start = ((50,341,887 + 1 + 2047) ÷ 2048) × 2048
+            = (50,343,935 ÷ 2048) × 2048
+            = 24,582 × 2048
+            = 50,343,936
+
+  var_end = ((50,343,936 + 33,554,432 + 2047) ÷ 2048) × 2048 - 1
+          = (83,900,415 ÷ 2048) × 2048 - 1
+          = 40,967 × 2048 - 1
+          = 83,900,416 - 1
+          = 83,900,415
 ```
 
-**4. /home Partition (always created):**
+**4. /home Partition (always created - takes remaining space):**
 ```
-/home gets all remaining space to maximize available storage
+Given: prev_end = var_end (or swap_end, or root_end)
+       disk_total_sectors = total disk sectors
 
-Step 1: Start after previous partition
-  If var exists:
-    home_start = align_up(var_end + 1)
-  Else if swap exists:
-    home_start = align_up(swap_end + 1)
-  Else:
-    home_start = align_up(root_end + 1)
+Calculate /home boundaries:
+  home_start = align_sector(prev_end + 1)
+  home_end = disk_total_sectors - 1  (no alignment - use exact end)
 
-Step 2: End at disk boundary
+Formula:
+  home_start = ((prev_end + 1 + 2047) ÷ 2048) × 2048
   home_end = disk_total_sectors - 1
 
-  Example: 128GB disk = 250,069,680 sectors
-    home_end = 250,069,679
+Example (prev_end = 83,900,415, disk = 250,069,680 sectors):
+  home_start = ((83,900,415 + 1 + 2047) ÷ 2048) × 2048
+             = (83,902,463 ÷ 2048) × 2048
+             = 40,968 × 2048
+             = 83,902,464
 
-Step 3: Calculate actual size
-  home_size_sectors = home_end - home_start + 1
-  home_size_bytes = home_size_sectors × 512
+  home_end = 250,069,680 - 1
+           = 250,069,679
+
+  home_size = 250,069,679 - 83,902,464 + 1
+            = 166,167,216 sectors
+            = 85,077,614,592 bytes (~79.2 GB)
+```
+
+#### Generic Formula for Any Partition
+
+For any partition after the root:
+```
+Given:
+  prev_end = end sector of previous partition
+  part_size_sectors = desired partition size in sectors
+
+Calculate:
+  part_start = ((prev_end + 1 + 2047) ÷ 2048) × 2048
+  part_end = ((part_start + part_size_sectors + 2047) ÷ 2048) × 2048 - 1
+```
+
+Special case for last partition (/home):
+```
+  part_start = ((prev_end + 1 + 2047) ÷ 2048) × 2048
+  part_end = disk_total_sectors - 1  (maximizes space usage)
 ```
 
 #### Alignment Benefits
