@@ -7,17 +7,17 @@ A Rust program to shrink the Raspberry Pi root filesystem and create additional 
 ## Features
 
 - Shrinks root filesystem to a specified size (8G-64G)
-- Creates optional swap partition (specify with `-s SIZE`)
-- Creates optional btrfs /var partition (specify with `-v SIZE`)
-- Creates ext4 /home partition with remaining space
+- Creates optional swap partition (specify with `-s SIZE`) - **NOT allowed on SD cards**
+- Creates optional btrfs /var partition (specify with `-v SIZE`) - **NOT allowed on SD cards**
+- **Always creates ext4 /home partition** with remaining space
 - **Always migrates data** from /var and /home to new partitions
 - **Always updates /etc/fstab** with new partition UUIDs
 - Displays all CLI arguments and pauses for confirmation
 - Ensures proper 2048-sector alignment for all partitions
 - Automatically checks and installs required dependencies
 - Detects and prevents running on active root disk
+- Blocks swap/var on SD cards (wear protection)
 - Dry-run mode to preview changes
-- SD card detection with warnings
 
 ## Requirements
 
@@ -66,12 +66,12 @@ sudo ./target/release/rpi-fs-shrink -d DEVICE -r ROOT_SIZE [OPTIONS]
 - `-s, --swap-size SIZE` - Swap partition size (e.g., `4G`, `8G`)
   - Optional - only created if specified
   - Recommended: 1-2x RAM size
-  - Warning shown if used on SD cards
+  - **BLOCKED on SD cards** (excessive wear concern)
 
 - `-v, --var-size SIZE` - /var partition size (e.g., `4G`, `8G`)
   - Optional - only created if specified
   - Uses btrfs filesystem
-  - Warning shown if used on SD cards
+  - **BLOCKED on SD cards** (excessive wear concern)
 
 - `--dry-run` - Show what would be done without making changes
 - `--allow-active-disk` - Override inactive disk check (DANGEROUS - NOT RECOMMENDED)
@@ -87,7 +87,9 @@ Sizes can be specified with units:
 
 ### Example 1: 16GB SD Card (from LiveUSB)
 
-Shrink root to 8G, create /home with remaining space (no swap, no /var):
+Shrink root to 8G, create /home with remaining space.
+
+**Note:** SD cards do NOT support swap or /var partitions due to wear concerns.
 
 ```bash
 # Boot from LiveUSB, then run:
@@ -114,12 +116,14 @@ Result:
 
 The tool will automatically:
 1. Shrink the root filesystem
-2. Create partitions
-3. Mount them at /mnt/root, /mnt/home
+2. Create /home partition
+3. Mount partitions at /mnt/root, /mnt/home
 4. Migrate /home data to new partition
 5. Update /etc/fstab with UUIDs
 6. Unmount all partitions
 7. Disk is ready to boot!
+
+If you try to use `-s` or `-v` on an SD card, the tool will error and stop.
 
 ### Example 2: 128GB SSD with Swap and /var (from LiveUSB)
 
@@ -212,10 +216,13 @@ All partitions are aligned on 2048-sector boundaries (1MB) for optimal performan
 
 - **Must run on inactive disk** (boot from LiveUSB or another system)
 - Root filesystem must be between 8G and 64G
+- **/home partition is always created** (cannot run with root only)
 - /home partition must be at least half the disk size
-- On SD cards:
+- **On SD cards:**
   - Root size is limited by total disk size
-  - Swap/var partitions will show warnings (but are allowed)
+  - **Swap partitions are BLOCKED** (SD card wear protection)
+  - **/var partitions are BLOCKED** (SD card wear protection)
+  - Only root + /home partitions allowed
 
 ## After Running the Tool
 
@@ -252,12 +259,23 @@ All partitions are aligned on 2048-sector boundaries (1MB) for optimal performan
 - Verify rsync is installed
 - Check /mnt/root/var and /mnt/root/home exist and are accessible
 
+### "Swap partition is not allowed on SD cards"
+- **This is intentional!** SD cards have limited write cycles
+- Swap would cause excessive wear and shorten SD card life
+- Use a real SSD/HDD if you need swap
+
+### "Separate /var partition is not allowed on SD cards"
+- **This is intentional!** SD cards have limited write cycles
+- /var contains frequently written logs and cache
+- Use a real SSD/HDD if you need separate /var
+
 ## Safety Features
 
 - **CLI arguments display and pause** - Shows all settings before proceeding
 - **Inactive disk detection** - Prevents running on active root filesystem
+- **SD card wear protection** - Blocks swap/var on SD cards
 - Requires root privileges
-- SD card detection with warnings (for swap/var)
+- Always creates /home partition (root-only not allowed)
 - Dry-run mode for testing
 - Interactive confirmation before making changes
 - Validates all size constraints

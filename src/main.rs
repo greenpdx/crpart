@@ -129,13 +129,13 @@ fn main() -> Result<()> {
         );
     }
 
-    // Check SD card constraints
+    // Check SD card constraints - block swap and var on SD cards
     if disk_info.is_sd_card {
         if swap_size.is_some() {
-            println!("WARNING: Swap partition not recommended on SD cards");
+            bail!("ERROR: Swap partition is not allowed on SD cards.\nSD cards have limited write cycles and swap would cause excessive wear.");
         }
         if var_size.is_some() {
-            println!("WARNING: Separate /var partition not recommended on SD cards");
+            bail!("ERROR: Separate /var partition is not allowed on SD cards.\nSD cards have limited write cycles and separate /var would cause excessive wear.");
         }
     }
 
