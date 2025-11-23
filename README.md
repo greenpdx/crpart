@@ -7,16 +7,17 @@ A Rust program to shrink the Raspberry Pi root filesystem and create additional 
 ## Features
 
 - Shrinks root filesystem to a specified size (8G-64G)
-- Creates optional swap partition (not on SD cards by default)
-- Creates optional btrfs /var partition (not on SD cards by default)
+- Creates optional swap partition (specify with `-s SIZE`)
+- Creates optional btrfs /var partition (specify with `-v SIZE`)
 - Creates ext4 /home partition with remaining space
-- **Automatically migrates data** from /var and /home to new partitions
-- **Automatically updates /etc/fstab** with new partition UUIDs
+- **Always migrates data** from /var and /home to new partitions
+- **Always updates /etc/fstab** with new partition UUIDs
+- Displays all CLI arguments and pauses for confirmation
 - Ensures proper 2048-sector alignment for all partitions
 - Automatically checks and installs required dependencies
 - Detects and prevents running on active root disk
 - Dry-run mode to preview changes
-- SD card detection with appropriate warnings
+- SD card detection with warnings
 
 ## Requirements
 
@@ -63,16 +64,15 @@ sudo ./target/release/rpi-fs-shrink -d DEVICE -r ROOT_SIZE [OPTIONS]
 ### Optional Arguments
 
 - `-s, --swap-size SIZE` - Swap partition size (e.g., `4G`, `8G`)
-  - Not created on SD cards unless `-f` is used
+  - Optional - only created if specified
   - Recommended: 1-2x RAM size
+  - Warning shown if used on SD cards
 
 - `-v, --var-size SIZE` - /var partition size (e.g., `4G`, `8G`)
-  - Not created on SD cards unless `-f` is used
+  - Optional - only created if specified
   - Uses btrfs filesystem
+  - Warning shown if used on SD cards
 
-- `-f, --force` - Force creation of swap/var on SD cards
-- `-m, --migrate` - Migrate data and update fstab (enabled by default)
-  - Use `--no-migrate` to skip data migration
 - `--dry-run` - Show what would be done without making changes
 - `--allow-active-disk` - Override inactive disk check (DANGEROUS - NOT RECOMMENDED)
 
@@ -87,11 +87,24 @@ Sizes can be specified with units:
 
 ### Example 1: 16GB SD Card (from LiveUSB)
 
-Shrink root to 8G, create /home with remaining space, and migrate data:
+Shrink root to 8G, create /home with remaining space (no swap, no /var):
 
 ```bash
 # Boot from LiveUSB, then run:
 sudo ./target/release/rpi-fs-shrink -d /dev/mmcblk0 -r 8G
+```
+
+The tool will display:
+```
+Command Line Arguments:
+  Device: /dev/mmcblk0
+  Root size: 8G
+  Swap size: None
+  Var size: None
+  Dry run: false
+  Allow active disk: false
+
+Press Enter to continue...
 ```
 
 Result:
@@ -99,21 +112,35 @@ Result:
 - `/dev/mmcblk0p2` - Root (/) - 8GB ext4
 - `/dev/mmcblk0p3` - /home - ~8GB ext4
 
-The tool will:
+The tool will automatically:
 1. Shrink the root filesystem
 2. Create partitions
-3. Mount them at /mnt/root, /mnt/var, /mnt/home
-4. Copy /home data to new partition
-5. Update /mnt/root/etc/fstab
+3. Mount them at /mnt/root, /mnt/home
+4. Migrate /home data to new partition
+5. Update /etc/fstab with UUIDs
 6. Unmount all partitions
+7. Disk is ready to boot!
 
-### Example 2: 128GB SSD (from LiveUSB)
+### Example 2: 128GB SSD with Swap and /var (from LiveUSB)
 
 Shrink root to 16G, add 8G swap, 16G /var, rest for /home:
 
 ```bash
 # Boot from LiveUSB with the target SSD connected
 sudo ./target/release/rpi-fs-shrink -d /dev/sda -r 16G -s 8G -v 16G
+```
+
+The tool will display:
+```
+Command Line Arguments:
+  Device: /dev/sda
+  Root size: 16G
+  Swap size: 8G
+  Var size: 16G
+  Dry run: false
+  Allow active disk: false
+
+Press Enter to continue...
 ```
 
 Result:
@@ -133,42 +160,49 @@ The tool will automatically:
 7. Unmount all partitions
 8. Disk is ready to boot!
 
-### Example 3: Dry Run
+### Example 3: 128GB SSD with Swap only (no /var)
+
+Shrink root to 16G, add 8G swap, rest for /home:
+
+```bash
+sudo ./target/release/rpi-fs-shrink -d /dev/sda -r 16G -s 8G
+```
+
+Result:
+- `/dev/sda1` - Boot (unchanged)
+- `/dev/sda2` - Root (/) - 16GB ext4
+- `/dev/sda3` - Swap - 8GB
+- `/dev/sda4` - /home - ~104GB ext4
+
+### Example 4: Dry Run
 
 Preview changes without modifying disk:
 
 ```bash
-sudo ./target/release/rpi-fs-shrink -d /dev/mmcblk0 -r 8G -s 4G --dry-run
-```
-
-### Example 4: Force Swap on SD Card
-
-Create swap on SD card (not recommended but possible):
-
-```bash
-sudo ./target/release/rpi-fs-shrink -d /dev/mmcblk0 -r 8G -s 2G -f
+sudo ./target/release/rpi-fs-shrink -d /dev/mmcblk0 -r 8G --dry-run
 ```
 
 ## How It Works
 
-1. **Dependency Check** - Verifies required tools are installed
-2. **Inactive Disk Check** - Ensures target is not the active root disk
-3. **Device Analysis** - Detects SD card, gets disk size and partition info
-4. **Layout Calculation** - Calculates partition boundaries with 2048-sector alignment
-5. **Filesystem Check** - Runs e2fsck on root filesystem
-6. **Filesystem Shrink** - Shrinks ext4 filesystem using resize2fs
-7. **Partition Resize** - Resizes root partition using parted
-8. **Partition Creation** - Creates new partitions:
-   - Swap partition (if requested)
-   - /var partition with btrfs (if requested)
+1. **Display Arguments & Pause** - Shows all CLI arguments and waits for Enter key
+2. **Dependency Check** - Verifies required tools are installed
+3. **Inactive Disk Check** - Ensures target is not the active root disk
+4. **Device Analysis** - Detects SD card, gets disk size and partition info
+5. **Layout Calculation** - Calculates partition boundaries with 2048-sector alignment
+6. **Filesystem Check** - Runs e2fsck on root filesystem
+7. **Filesystem Shrink** - Shrinks ext4 filesystem using resize2fs
+8. **Partition Resize** - Resizes root partition using parted
+9. **Partition Creation** - Creates new partitions:
+   - Swap partition (if `-s` specified)
+   - /var partition with btrfs (if `-v` specified)
    - /home partition with ext4 (remaining space)
-9. **Data Migration** (if `-m` enabled, default):
-   - Creates mount points: /mnt/root, /mnt/var, /mnt/home
-   - Mounts all partitions
-   - Migrates /var data (if /var partition created)
-   - Migrates /home data
-   - Updates /etc/fstab with UUIDs
-   - Unmounts all partitions
+10. **Data Migration** (always performed):
+    - Creates mount points: /mnt/root, /mnt/var (if needed), /mnt/home
+    - Mounts all partitions
+    - Migrates /var data (if /var partition created)
+    - Migrates /home data
+    - Updates /etc/fstab with UUIDs
+    - Unmounts all partitions
 
 ## Partition Alignment
 
@@ -181,21 +215,15 @@ All partitions are aligned on 2048-sector boundaries (1MB) for optimal performan
 - /home partition must be at least half the disk size
 - On SD cards:
   - Root size is limited by total disk size
-  - Swap/var partitions require `-f` flag (not recommended)
+  - Swap/var partitions will show warnings (but are allowed)
 
 ## After Running the Tool
 
-With data migration enabled (default `-m`):
 1. **The disk is ready to boot!** - All data has been migrated and fstab updated
 2. Shut down the LiveUSB and boot from the modified disk
 3. Verify partitions are mounted: `df -h`
 4. Check fstab: `cat /etc/fstab`
-
-Without data migration (`--no-migrate`):
-1. Manually mount partitions at /mnt/root, /mnt/var, /mnt/home
-2. Migrate data using rsync
-3. Update /mnt/root/etc/fstab with UUIDs (use `blkid` to get them)
-4. Unmount and boot from the disk
+5. Verify swap (if created): `swapon --show`
 
 ## Troubleshooting
 
@@ -226,9 +254,10 @@ Without data migration (`--no-migrate`):
 
 ## Safety Features
 
+- **CLI arguments display and pause** - Shows all settings before proceeding
 - **Inactive disk detection** - Prevents running on active root filesystem
 - Requires root privileges
-- SD card detection with warnings
+- SD card detection with warnings (for swap/var)
 - Dry-run mode for testing
 - Interactive confirmation before making changes
 - Validates all size constraints

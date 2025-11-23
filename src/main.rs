@@ -32,14 +32,6 @@ struct Args {
     #[arg(long)]
     dry_run: bool,
 
-    /// Force operation even on SD cards for swap/var
-    #[arg(short = 'f', long)]
-    force: bool,
-
-    /// Migrate data and update fstab (default: true, use --no-migrate to skip)
-    #[arg(short = 'm', long, default_value = "true")]
-    migrate: bool,
-
     /// Skip inactive disk check (dangerous - allows running on active root disk)
     #[arg(long)]
     allow_active_disk: bool,
@@ -89,6 +81,26 @@ fn main() -> Result<()> {
     println!("RPi Filesystem Shrink Tool");
     println!("==========================\n");
 
+    // Display command line arguments
+    println!("Command Line Arguments:");
+    println!("  Device: {}", args.device);
+    println!("  Root size: {}", args.root_size);
+    if let Some(ref swap) = args.swap_size {
+        println!("  Swap size: {}", swap);
+    } else {
+        println!("  Swap size: None");
+    }
+    if let Some(ref var) = args.var_size {
+        println!("  Var size: {}", var);
+    } else {
+        println!("  Var size: None");
+    }
+    println!("  Dry run: {}", args.dry_run);
+    println!("  Allow active disk: {}", args.allow_active_disk);
+    println!("\nPress Enter to continue...");
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+
     // Check and install dependencies
     check_dependencies(args.dry_run)?;
 
@@ -118,12 +130,12 @@ fn main() -> Result<()> {
     }
 
     // Check SD card constraints
-    if disk_info.is_sd_card && !args.force {
+    if disk_info.is_sd_card {
         if swap_size.is_some() {
-            println!("WARNING: Swap partition not recommended on SD cards (use -f to force)");
+            println!("WARNING: Swap partition not recommended on SD cards");
         }
         if var_size.is_some() {
-            println!("WARNING: Separate /var partition not recommended on SD cards (use -f to force)");
+            println!("WARNING: Separate /var partition not recommended on SD cards");
         }
     }
 
@@ -131,8 +143,8 @@ fn main() -> Result<()> {
     let layout = calculate_partition_layout(
         &disk_info,
         root_size,
-        if disk_info.is_sd_card && !args.force { None } else { swap_size },
-        if disk_info.is_sd_card && !args.force { None } else { var_size },
+        swap_size,
+        var_size,
     )?;
 
     print_layout(&layout);
@@ -192,46 +204,32 @@ fn main() -> Result<()> {
 
     println!("\n=== Partitions created successfully! ===");
 
-    // Step 7: Migrate data and update fstab (if requested)
-    if args.migrate {
-        println!("\n=== Starting data migration ===\n");
+    // Step 7: Migrate data and update fstab (always enabled)
+    println!("\n=== Starting data migration ===\n");
 
-        println!("Step 7: Creating mount points...");
-        create_mount_points()?;
+    println!("Step 7: Creating mount points...");
+    create_mount_points()?;
 
-        println!("\nStep 8: Mounting partitions...");
-        mount_partitions(&created_partitions)?;
+    println!("\nStep 8: Mounting partitions...");
+    mount_partitions(&created_partitions)?;
 
-        if var_device.is_some() {
-            println!("\nStep 9: Migrating /var data...");
-            migrate_var_data()?;
-        }
-
-        println!("\nStep 10: Migrating /home data...");
-        migrate_home_data()?;
-
-        println!("\nStep 11: Updating /etc/fstab...");
-        update_fstab(&created_partitions)?;
-
-        println!("\nStep 12: Unmounting partitions...");
-        unmount_all()?;
-
-        println!("\n=== Migration complete! ===");
-        println!("\nAll data has been migrated and fstab updated.");
-        println!("You can now boot from this disk.");
-    } else {
-        println!("\nData migration skipped (use -m to enable).");
-        println!("\nNext steps:");
-        if layout.swap_size_bytes > 0 {
-            println!("  1. Mount root partition at /mnt/root");
-            println!("  2. Add swap to /mnt/root/etc/fstab");
-        }
-        if var_device.is_some() {
-            println!("  3. Mount /var partition and migrate data from /mnt/root/var/");
-        }
-        println!("  4. Mount /home partition and migrate data from /mnt/root/home/");
-        println!("  5. Update /mnt/root/etc/fstab");
+    if var_device.is_some() {
+        println!("\nStep 9: Migrating /var data...");
+        migrate_var_data()?;
     }
+
+    println!("\nStep 10: Migrating /home data...");
+    migrate_home_data()?;
+
+    println!("\nStep 11: Updating /etc/fstab...");
+    update_fstab(&created_partitions)?;
+
+    println!("\nStep 12: Unmounting partitions...");
+    unmount_all()?;
+
+    println!("\n=== Migration complete! ===");
+    println!("\nAll data has been migrated and fstab updated.");
+    println!("You can now boot from this disk.");
 
     Ok(())
 }
