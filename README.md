@@ -212,6 +212,172 @@ sudo ./target/release/rpi-fs-shrink -d /dev/mmcblk0 -r 8G --dry-run
 
 All partitions are aligned on 2048-sector boundaries (1MB) for optimal performance with modern storage devices.
 
+### Sector-Based Partition Mathematics
+
+The tool uses **512-byte sectors** for all calculations with **2048-sector alignment** (1MB boundaries).
+
+#### Constants
+- **Sector Size**: 512 bytes
+- **Alignment Boundary**: 2048 sectors (1MB)
+- **Alignment Bytes**: 2048 × 512 = 1,048,576 bytes (1MB)
+
+#### Partition Sizing Algorithm
+
+**1. Root Partition Shrink:**
+```
+User specifies: -r 16G
+
+Step 1: Convert to bytes
+  root_size_bytes = 16 × 1024³ = 17,179,869,184 bytes
+
+Step 2: Convert to sectors
+  root_size_sectors = 17,179,869,184 ÷ 512 = 33,554,432 sectors
+
+Step 3: Calculate aligned end boundary
+  root_start = (existing partition start, e.g., 2048)
+  root_end_raw = root_start + root_size_sectors
+  root_end_aligned = align_down(root_end_raw) - 1
+
+  align_down(sector) = (sector ÷ 2048) × 2048
+
+  Example: If root_end_raw = 33,556,480
+    aligned = (33,556,480 ÷ 2048) × 2048 = 33,554,432
+    root_end = 33,554,432 - 1 = 33,554,431
+```
+
+**2. Swap Partition (if specified):**
+```
+User specifies: -s 8G
+
+Step 1: Convert to sectors
+  swap_size_sectors = (8 × 1024³) ÷ 512 = 16,777,216 sectors
+
+Step 2: Align start on 2048 boundary
+  swap_start = align_up(root_end + 1)
+
+  align_up(sector) = ((sector + 2048 - 1) ÷ 2048) × 2048
+
+  Example: If root_end = 33,554,431
+    swap_start_raw = 33,554,432
+    swap_start = ((33,554,432 + 2047) ÷ 2048) × 2048
+               = (33,556,479 ÷ 2048) × 2048
+               = 16,385 × 2048 = 33,556,480
+
+Step 3: Align end on 2048 boundary
+  swap_end_raw = swap_start + swap_size_sectors
+  swap_end = align_up(swap_end_raw) - 1
+
+  Example: swap_end_raw = 33,556,480 + 16,777,216 = 50,333,696
+    aligned = ((50,333,696 + 2047) ÷ 2048) × 2048
+            = 50,333,696 (already aligned)
+    swap_end = 50,333,696 - 1 = 50,333,695
+```
+
+**3. /var Partition (if specified):**
+```
+User specifies: -v 16G
+
+Step 1: Convert to sectors
+  var_size_sectors = (16 × 1024³) ÷ 512 = 33,554,432 sectors
+
+Step 2: Start after previous partition (swap or root)
+  If swap exists:
+    var_start = align_up(swap_end + 1)
+  Else:
+    var_start = align_up(root_end + 1)
+
+  Example with swap: var_start = align_up(50,333,696)
+    = ((50,333,696 + 2047) ÷ 2048) × 2048
+    = 50,333,696 (already aligned)
+
+Step 3: Align end
+  var_end = align_up(var_start + var_size_sectors) - 1
+```
+
+**4. /home Partition (always created):**
+```
+/home gets all remaining space to maximize available storage
+
+Step 1: Start after previous partition
+  If var exists:
+    home_start = align_up(var_end + 1)
+  Else if swap exists:
+    home_start = align_up(swap_end + 1)
+  Else:
+    home_start = align_up(root_end + 1)
+
+Step 2: End at disk boundary
+  home_end = disk_total_sectors - 1
+
+  Example: 128GB disk = 250,069,680 sectors
+    home_end = 250,069,679
+
+Step 3: Calculate actual size
+  home_size_sectors = home_end - home_start + 1
+  home_size_bytes = home_size_sectors × 512
+```
+
+#### Alignment Benefits
+
+**Why 2048-sector (1MB) alignment?**
+
+1. **Modern Disks**: Advanced Format drives use 4KB physical sectors
+   - 2048 × 512 = 1MB aligns with multiple 4KB sectors
+
+2. **SSD Performance**: SSD erase blocks are typically 512KB-4MB
+   - 1MB alignment ensures no partition crosses erase block boundaries
+
+3. **RAID Optimization**: Common RAID stripe sizes are 64KB, 128KB, 256KB
+   - 1MB is divisible by all common stripe sizes
+
+4. **Filesystem Block Alignment**: Most filesystems use 4KB blocks
+   - 1MB = 256 × 4KB blocks, perfectly aligned
+
+#### Example Calculation: 128GB SSD
+
+```
+Disk: 128GB = 250,069,680 sectors (128 × 1024³ ÷ 512)
+User: -r 16G -s 8G -v 16G
+
+Root Partition (partition 2):
+  Start: 2048 (existing)
+  Size:  16 × 1024³ ÷ 512 = 33,554,432 sectors
+  End:   align_down(2048 + 33,554,432) - 1 = 33,554,431
+  Bytes: 33,552,384 × 512 = 17,178,820,608 (~16GB)
+
+Swap Partition (partition 3):
+  Start: align_up(33,554,432) = 33,556,480
+  Size:  8 × 1024³ ÷ 512 = 16,777,216 sectors
+  End:   align_up(33,556,480 + 16,777,216) - 1 = 50,333,695
+  Bytes: 16,777,216 × 512 = 8,589,934,592 (8GB)
+
+/var Partition (partition 4):
+  Start: align_up(50,333,696) = 50,333,696
+  Size:  16 × 1024³ ÷ 512 = 33,554,432 sectors
+  End:   align_up(50,333,696 + 33,554,432) - 1 = 83,888,127
+  Bytes: 33,554,432 × 512 = 17,179,869,184 (16GB)
+
+/home Partition (partition 5):
+  Start: align_up(83,888,128) = 83,886,080
+  End:   250,069,679 (disk end)
+  Size:  166,183,600 sectors
+  Bytes: 166,183,600 × 512 = 85,086,003,200 (~79.2GB)
+
+Total allocated: ~120GB
+Lost to alignment: <1MB per partition (~3-4MB total)
+```
+
+#### Maximizing Partition Size
+
+The tool **maximizes partition utilization** while maintaining alignment:
+
+1. **Always align partition start**: Round up to next 2048 boundary
+2. **Align partition end**: Round up size to next 2048 boundary
+3. **/home takes all remaining space**: No rounding, uses exact disk end
+4. **Minimal alignment waste**: <1MB per partition
+
+Total waste from alignment is typically **<0.01%** of disk capacity.
+
 ## Constraints
 
 - **Must run on inactive disk** (boot from LiveUSB or another system)
