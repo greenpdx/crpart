@@ -35,6 +35,14 @@ struct Args {
     /// Force operation even on SD cards for swap/var
     #[arg(short = 'f', long)]
     force: bool,
+
+    /// Migrate data and update fstab (default: true, use --no-migrate to skip)
+    #[arg(short = 'm', long, default_value = "true")]
+    migrate: bool,
+
+    /// Skip inactive disk check (dangerous - allows running on active root disk)
+    #[arg(long)]
+    allow_active_disk: bool,
 }
 
 #[derive(Debug)]
@@ -60,6 +68,14 @@ struct PartitionLayout {
     var_end: u64,
     home_start: u64,
     home_end: u64,
+}
+
+#[derive(Debug, Clone)]
+struct CreatedPartitions {
+    root_device: String,
+    swap_device: Option<String>,
+    var_device: Option<String>,
+    home_device: String,
 }
 
 fn main() -> Result<()> {
@@ -90,6 +106,16 @@ fn main() -> Result<()> {
     println!("  Size: {} GB ({} bytes)", disk_info.size_bytes / (1024 * 1024 * 1024), disk_info.size_bytes);
     println!("  Is SD Card: {}", disk_info.is_sd_card);
     println!("  Root Partition: {}\n", disk_info.root_partition);
+
+    // Check if disk is the active root disk
+    if !args.allow_active_disk && is_active_root_disk(&disk_info.device)? {
+        bail!(
+            "ERROR: {} appears to be the active root disk!\n\
+            This program must be run on an INACTIVE disk (e.g., from a LiveUSB).\n\
+            Use --allow-active-disk to override this check (NOT RECOMMENDED).",
+            disk_info.device
+        );
+    }
 
     // Check SD card constraints
     if disk_info.is_sd_card && !args.force {
@@ -138,38 +164,99 @@ fn main() -> Result<()> {
     resize_root_partition(&disk_info, layout.root_end)?;
 
     // Step 4: Create swap partition (if requested)
-    if layout.swap_size_bytes > 0 {
+    let swap_device = if layout.swap_size_bytes > 0 {
         println!("\nStep 4: Creating swap partition...");
-        create_swap_partition(&disk_info, layout.swap_start, layout.swap_end)?;
-    }
+        Some(create_swap_partition(&disk_info, layout.swap_start, layout.swap_end)?)
+    } else {
+        None
+    };
 
     // Step 5: Create /var partition (if requested)
-    if layout.var_size_bytes > 0 {
+    let var_device = if layout.var_size_bytes > 0 {
         println!("\nStep 5: Creating /var partition...");
-        create_var_partition(&disk_info, layout.var_start, layout.var_end)?;
-    }
+        Some(create_var_partition(&disk_info, layout.var_start, layout.var_end)?)
+    } else {
+        None
+    };
 
     // Step 6: Create /home partition
     println!("\nStep 6: Creating /home partition...");
-    create_home_partition(&disk_info, layout.home_start, layout.home_end)?;
+    let home_device = create_home_partition(&disk_info, layout.home_start, layout.home_end)?;
 
-    println!("\n=== Success! ===");
-    println!("\nPartitions created successfully!");
-    println!("\nNext steps:");
-    if layout.swap_size_bytes > 0 {
-        println!("  1. Add swap to /etc/fstab");
+    let created_partitions = CreatedPartitions {
+        root_device: disk_info.root_partition.clone(),
+        swap_device,
+        var_device: var_device.clone(),
+        home_device: home_device.clone(),
+    };
+
+    println!("\n=== Partitions created successfully! ===");
+
+    // Step 7: Migrate data and update fstab (if requested)
+    if args.migrate {
+        println!("\n=== Starting data migration ===\n");
+
+        println!("Step 7: Creating mount points...");
+        create_mount_points()?;
+
+        println!("\nStep 8: Mounting partitions...");
+        mount_partitions(&created_partitions)?;
+
+        if var_device.is_some() {
+            println!("\nStep 9: Migrating /var data...");
+            migrate_var_data()?;
+        }
+
+        println!("\nStep 10: Migrating /home data...");
+        migrate_home_data()?;
+
+        println!("\nStep 11: Updating /etc/fstab...");
+        update_fstab(&created_partitions)?;
+
+        println!("\nStep 12: Unmounting partitions...");
+        unmount_all()?;
+
+        println!("\n=== Migration complete! ===");
+        println!("\nAll data has been migrated and fstab updated.");
+        println!("You can now boot from this disk.");
+    } else {
+        println!("\nData migration skipped (use -m to enable).");
+        println!("\nNext steps:");
+        if layout.swap_size_bytes > 0 {
+            println!("  1. Mount root partition at /mnt/root");
+            println!("  2. Add swap to /mnt/root/etc/fstab");
+        }
+        if var_device.is_some() {
+            println!("  3. Mount /var partition and migrate data from /mnt/root/var/");
+        }
+        println!("  4. Mount /home partition and migrate data from /mnt/root/home/");
+        println!("  5. Update /mnt/root/etc/fstab");
     }
-    if layout.var_size_bytes > 0 {
-        println!("  2. Mount /var partition and migrate data");
-    }
-    println!("  3. Mount /home partition and migrate user data");
-    println!("  4. Reboot to verify changes");
 
     Ok(())
 }
 
 fn is_root() -> bool {
     unsafe { libc::geteuid() == 0 }
+}
+
+fn is_active_root_disk(device: &str) -> Result<bool> {
+    // Read /proc/mounts to find the root filesystem
+    let mounts = std::fs::read_to_string("/proc/mounts")
+        .context("Failed to read /proc/mounts")?;
+
+    for line in mounts.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 && parts[1] == "/" {
+            let root_device = parts[0];
+            // Check if this device or any partition on it is the root
+            if root_device.starts_with(device) || device.starts_with(root_device) {
+                return Ok(true);
+            }
+        }
+    }
+
+    Ok(false)
 }
 
 fn check_dependencies(dry_run: bool) -> Result<()> {
@@ -181,6 +268,10 @@ fn check_dependencies(dry_run: bool) -> Result<()> {
         ("mkfs.ext4", "e2fsprogs"),
         ("mkfs.btrfs", "btrfs-progs"),
         ("mkswap", "util-linux"),
+        ("rsync", "rsync"),
+        ("mount", "mount"),
+        ("umount", "mount"),
+        ("blkid", "util-linux"),
     ];
 
     let mut missing = Vec::new();
@@ -575,7 +666,7 @@ fn get_next_partition_number(device: &str) -> Result<u32> {
     Ok(max_num + 1)
 }
 
-fn create_swap_partition(disk_info: &DiskInfo, start: u64, end: u64) -> Result<()> {
+fn create_swap_partition(disk_info: &DiskInfo, start: u64, end: u64) -> Result<String> {
     let part_num = get_next_partition_number(&disk_info.device)?;
 
     println!("  Creating swap partition {} from sector {} to {}...", part_num, start, end);
@@ -613,10 +704,10 @@ fn create_swap_partition(disk_info: &DiskInfo, start: u64, end: u64) -> Result<(
     }
 
     println!("  Swap partition created: {}", swap_device);
-    Ok(())
+    Ok(swap_device)
 }
 
-fn create_var_partition(disk_info: &DiskInfo, start: u64, end: u64) -> Result<()> {
+fn create_var_partition(disk_info: &DiskInfo, start: u64, end: u64) -> Result<String> {
     let part_num = get_next_partition_number(&disk_info.device)?;
 
     println!("  Creating /var partition {} from sector {} to {}...", part_num, start, end);
@@ -654,10 +745,10 @@ fn create_var_partition(disk_info: &DiskInfo, start: u64, end: u64) -> Result<()
     }
 
     println!("  /var partition created: {}", var_device);
-    Ok(())
+    Ok(var_device)
 }
 
-fn create_home_partition(disk_info: &DiskInfo, start: u64, end: u64) -> Result<()> {
+fn create_home_partition(disk_info: &DiskInfo, start: u64, end: u64) -> Result<String> {
     let part_num = get_next_partition_number(&disk_info.device)?;
 
     println!("  Creating /home partition {} from sector {} to {}...", part_num, start, end);
@@ -695,7 +786,7 @@ fn create_home_partition(disk_info: &DiskInfo, start: u64, end: u64) -> Result<(
     }
 
     println!("  /home partition created: {}", home_device);
-    Ok(())
+    Ok(home_device)
 }
 
 fn get_partition_device(device: &str, partition_num: u32) -> Result<String> {
@@ -713,4 +804,223 @@ fn get_partition_device(device: &str, partition_num: u32) -> Result<String> {
     }
 
     Ok(partition_device)
+}
+
+fn create_mount_points() -> Result<()> {
+    let mount_points = vec!["/mnt/root", "/mnt/var", "/mnt/home"];
+
+    for mount_point in mount_points {
+        if !Path::new(mount_point).exists() {
+            std::fs::create_dir_all(mount_point)
+                .context(format!("Failed to create {}", mount_point))?;
+            println!("  Created {}", mount_point);
+        } else {
+            println!("  {} already exists", mount_point);
+        }
+    }
+
+    Ok(())
+}
+
+fn mount_partitions(partitions: &CreatedPartitions) -> Result<()> {
+    // Mount root partition
+    println!("  Mounting {} at /mnt/root...", partitions.root_device);
+    let status = Command::new("mount")
+        .args(&[&partitions.root_device, "/mnt/root"])
+        .status()
+        .context("Failed to mount root partition")?;
+
+    if !status.success() {
+        bail!("Failed to mount root partition");
+    }
+
+    // Mount /var partition if it exists
+    if let Some(ref var_device) = partitions.var_device {
+        println!("  Mounting {} at /mnt/var...", var_device);
+        let status = Command::new("mount")
+            .args(&[var_device, "/mnt/var"])
+            .status()
+            .context("Failed to mount /var partition")?;
+
+        if !status.success() {
+            bail!("Failed to mount /var partition");
+        }
+    }
+
+    // Mount /home partition
+    println!("  Mounting {} at /mnt/home...", partitions.home_device);
+    let status = Command::new("mount")
+        .args(&[&partitions.home_device, "/mnt/home"])
+        .status()
+        .context("Failed to mount /home partition")?;
+
+    if !status.success() {
+        bail!("Failed to mount /home partition");
+    }
+
+    println!("  All partitions mounted successfully");
+    Ok(())
+}
+
+fn migrate_var_data() -> Result<()> {
+    println!("  Copying /mnt/root/var/* to /mnt/var/...");
+
+    // Check if /mnt/root/var exists and has content
+    if !Path::new("/mnt/root/var").exists() {
+        println!("  /mnt/root/var does not exist, skipping migration");
+        return Ok(());
+    }
+
+    // Use rsync to copy with progress
+    let status = Command::new("rsync")
+        .args(&[
+            "-avx",
+            "--progress",
+            "/mnt/root/var/",
+            "/mnt/var/",
+        ])
+        .status()
+        .context("Failed to run rsync for /var")?;
+
+    if !status.success() {
+        bail!("rsync failed for /var");
+    }
+
+    println!("  Deleting /mnt/root/var/*...");
+    let status = Command::new("rm")
+        .args(&["-rf", "/mnt/root/var/*"])
+        .status()
+        .context("Failed to delete /mnt/root/var/*")?;
+
+    if !status.success() {
+        bail!("Failed to delete /mnt/root/var/*");
+    }
+
+    println!("  /var migration complete");
+    Ok(())
+}
+
+fn migrate_home_data() -> Result<()> {
+    println!("  Copying /mnt/root/home/* to /mnt/home/...");
+
+    // Check if /mnt/root/home exists and has content
+    if !Path::new("/mnt/root/home").exists() {
+        println!("  /mnt/root/home does not exist, skipping migration");
+        return Ok(());
+    }
+
+    // Use rsync to copy with progress
+    let status = Command::new("rsync")
+        .args(&[
+            "-avx",
+            "--progress",
+            "/mnt/root/home/",
+            "/mnt/home/",
+        ])
+        .status()
+        .context("Failed to run rsync for /home")?;
+
+    if !status.success() {
+        bail!("rsync failed for /home");
+    }
+
+    println!("  Deleting /mnt/root/home/*...");
+    let status = Command::new("rm")
+        .args(&["-rf", "/mnt/root/home/*"])
+        .status()
+        .context("Failed to delete /mnt/root/home/*")?;
+
+    if !status.success() {
+        bail!("Failed to delete /mnt/root/home/*");
+    }
+
+    println!("  /home migration complete");
+    Ok(())
+}
+
+fn get_uuid(device: &str) -> Result<String> {
+    let output = Command::new("blkid")
+        .args(&["-s", "UUID", "-o", "value", device])
+        .output()
+        .context(format!("Failed to get UUID for {}", device))?;
+
+    if !output.status.success() {
+        bail!("Failed to get UUID for {}", device);
+    }
+
+    let uuid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if uuid.is_empty() {
+        bail!("UUID is empty for {}", device);
+    }
+
+    Ok(uuid)
+}
+
+fn update_fstab(partitions: &CreatedPartitions) -> Result<()> {
+    let fstab_path = "/mnt/root/etc/fstab";
+
+    // Read existing fstab
+    let mut fstab_content = std::fs::read_to_string(fstab_path)
+        .context("Failed to read /mnt/root/etc/fstab")?;
+
+    println!("  Getting UUIDs for new partitions...");
+
+    // Get UUIDs for new partitions
+    let mut new_entries = Vec::new();
+
+    if let Some(ref swap_device) = partitions.swap_device {
+        let uuid = get_uuid(swap_device)?;
+        println!("    Swap: UUID={}", uuid);
+        new_entries.push(format!("UUID={}  none  swap  sw  0  0", uuid));
+    }
+
+    if let Some(ref var_device) = partitions.var_device {
+        let uuid = get_uuid(var_device)?;
+        println!("    /var: UUID={}", uuid);
+        new_entries.push(format!("UUID={}  /var  btrfs  defaults  0  2", uuid));
+    }
+
+    let home_uuid = get_uuid(&partitions.home_device)?;
+    println!("    /home: UUID={}", home_uuid);
+    new_entries.push(format!("UUID={}  /home  ext4  defaults  0  2", home_uuid));
+
+    // Add new entries to fstab
+    fstab_content.push_str("\n# Added by rpi-fs-shrink\n");
+    for entry in new_entries {
+        fstab_content.push_str(&format!("{}\n", entry));
+    }
+
+    // Write updated fstab
+    std::fs::write(fstab_path, fstab_content)
+        .context("Failed to write /mnt/root/etc/fstab")?;
+
+    println!("  /etc/fstab updated successfully");
+    Ok(())
+}
+
+fn unmount_all() -> Result<()> {
+    let mount_points = vec!["/mnt/var", "/mnt/home", "/mnt/root"];
+
+    for mount_point in mount_points {
+        if Path::new(mount_point).exists() {
+            println!("  Unmounting {}...", mount_point);
+            let status = Command::new("umount")
+                .arg(mount_point)
+                .status();
+
+            match status {
+                Ok(s) if s.success() => {
+                    println!("    {} unmounted", mount_point);
+                }
+                Ok(_) => {
+                    println!("    Warning: Failed to unmount {} (may not be mounted)", mount_point);
+                }
+                Err(e) => {
+                    println!("    Warning: Error unmounting {}: {}", mount_point, e);
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
