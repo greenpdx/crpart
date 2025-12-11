@@ -422,9 +422,9 @@ fn get_disk_info(device: &str) -> Result<DiskInfo> {
 
     // Determine root partition (usually partition 2 on RPi)
     let root_partition = if is_sd_card {
-        format!("{}p2", device)
-    } else {
         format!("{}2", device)
+    } else {
+        format!("{}p2", device)
     };
 
     // Verify root partition exists
