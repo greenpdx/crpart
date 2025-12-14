@@ -320,7 +320,7 @@ fn install_packages(packages: &[&str]) -> Result<()> {
 
         for package in packages {
             let status = Command::new("apt-get")
-                .args(&["install", "-y", package])
+                .args(["install", "-y", package])
                 .status()
                 .context(format!("Failed to install {}", package))?;
 
@@ -335,7 +335,7 @@ fn install_packages(packages: &[&str]) -> Result<()> {
     if command_exists("yum") {
         for package in packages {
             let status = Command::new("yum")
-                .args(&["install", "-y", package])
+                .args(["install", "-y", package])
                 .status()
                 .context(format!("Failed to install {}", package))?;
 
@@ -405,7 +405,7 @@ fn get_disk_info(device: &str) -> Result<DiskInfo> {
 
     // Get disk size using parted
     let output = Command::new("parted")
-        .args(&[&device, "unit", "B", "print"])
+        .args([&device, "unit", "B", "print"])
         .output()
         .context("Failed to run parted")?;
 
@@ -442,7 +442,7 @@ fn get_disk_info(device: &str) -> Result<DiskInfo> {
 }
 
 fn align_sector(sector: u64) -> u64 {
-    ((sector + ALIGNMENT - 1) / ALIGNMENT) * ALIGNMENT
+    sector.div_ceil(ALIGNMENT) * ALIGNMENT
 }
 
 fn calculate_partition_layout(
@@ -532,7 +532,7 @@ fn calculate_partition_layout(
 
 fn get_partition_start(device: &str, partition_num: u32) -> Result<u64> {
     let output = Command::new("parted")
-        .args(&[device, "unit", "s", "print"])
+        .args([device, "unit", "s", "print"])
         .output()
         .context("Failed to run parted")?;
 
@@ -576,7 +576,7 @@ fn check_filesystem(partition: &str) -> Result<()> {
     println!("  Checking filesystem on {}...", partition);
 
     let status = Command::new("e2fsck")
-        .args(&["-f", "-y", partition])
+        .args(["-f", "-y", partition])
         .status()
         .context("Failed to run e2fsck")?;
 
@@ -594,7 +594,7 @@ fn shrink_root_filesystem(partition: &str, new_size: u64) -> Result<()> {
     println!("  Shrinking filesystem to {} 4K blocks...", blocks);
 
     let status = Command::new("resize2fs")
-        .args(&[partition, &format!("{}K", blocks * 4)])
+        .args([partition, &format!("{}K", blocks * 4)])
         .status()
         .context("Failed to run resize2fs")?;
 
@@ -616,7 +616,7 @@ fn resize_root_partition(disk_info: &DiskInfo, new_end_sector: u64) -> Result<()
     let commands = format!("rm 2\nmkpart primary ext4 {}s {}s\nquit\n", start, new_end_sector);
 
     let mut child = Command::new("parted")
-        .args(&[&disk_info.device])
+        .args([&disk_info.device])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -645,7 +645,7 @@ fn resize_root_partition(disk_info: &DiskInfo, new_end_sector: u64) -> Result<()
 
 fn get_next_partition_number(device: &str) -> Result<u32> {
     let output = Command::new("parted")
-        .args(&[device, "print"])
+        .args([device, "print"])
         .output()
         .context("Failed to run parted")?;
 
@@ -670,7 +670,7 @@ fn create_swap_partition(disk_info: &DiskInfo, start: u64, end: u64) -> Result<S
     println!("  Creating swap partition {} from sector {} to {}...", part_num, start, end);
 
     let status = Command::new("parted")
-        .args(&[
+        .args([
             &disk_info.device,
             "mkpart",
             "primary",
@@ -711,7 +711,7 @@ fn create_var_partition(disk_info: &DiskInfo, start: u64, end: u64) -> Result<St
     println!("  Creating /var partition {} from sector {} to {}...", part_num, start, end);
 
     let status = Command::new("parted")
-        .args(&[
+        .args([
             &disk_info.device,
             "mkpart",
             "primary",
@@ -734,7 +734,7 @@ fn create_var_partition(disk_info: &DiskInfo, start: u64, end: u64) -> Result<St
     println!("  Formatting {} as btrfs...", var_device);
 
     let status = Command::new("mkfs.btrfs")
-        .args(&["-f", &var_device])
+        .args(["-f", &var_device])
         .status()
         .context("Failed to run mkfs.btrfs")?;
 
@@ -752,7 +752,7 @@ fn create_home_partition(disk_info: &DiskInfo, start: u64, end: u64) -> Result<S
     println!("  Creating /home partition {} from sector {} to {}...", part_num, start, end);
 
     let status = Command::new("parted")
-        .args(&[
+        .args([
             &disk_info.device,
             "mkpart",
             "primary",
@@ -775,7 +775,7 @@ fn create_home_partition(disk_info: &DiskInfo, start: u64, end: u64) -> Result<S
     println!("  Formatting {} as ext4...", home_device);
 
     let status = Command::new("mkfs.ext4")
-        .args(&["-F", &home_device])
+        .args(["-F", &home_device])
         .status()
         .context("Failed to run mkfs.ext4")?;
 
@@ -824,7 +824,7 @@ fn mount_partitions(partitions: &CreatedPartitions) -> Result<()> {
     // Mount root partition
     println!("  Mounting {} at /mnt/root...", partitions.root_device);
     let status = Command::new("mount")
-        .args(&[&partitions.root_device, "/mnt/root"])
+        .args([&partitions.root_device, "/mnt/root"])
         .status()
         .context("Failed to mount root partition")?;
 
@@ -836,7 +836,7 @@ fn mount_partitions(partitions: &CreatedPartitions) -> Result<()> {
     if let Some(ref var_device) = partitions.var_device {
         println!("  Mounting {} at /mnt/var...", var_device);
         let status = Command::new("mount")
-            .args(&[var_device, "/mnt/var"])
+            .args([var_device.as_str(), "/mnt/var"])
             .status()
             .context("Failed to mount /var partition")?;
 
@@ -848,7 +848,7 @@ fn mount_partitions(partitions: &CreatedPartitions) -> Result<()> {
     // Mount /home partition
     println!("  Mounting {} at /mnt/home...", partitions.home_device);
     let status = Command::new("mount")
-        .args(&[&partitions.home_device, "/mnt/home"])
+        .args([&partitions.home_device, "/mnt/home"])
         .status()
         .context("Failed to mount /home partition")?;
 
@@ -871,7 +871,7 @@ fn migrate_var_data() -> Result<()> {
 
     // Use rsync to copy with progress
     let status = Command::new("rsync")
-        .args(&[
+        .args([
             "-avx",
             "--progress",
             "/mnt/root/var/",
@@ -886,7 +886,7 @@ fn migrate_var_data() -> Result<()> {
 
     println!("  Deleting /mnt/root/var/*...");
     let status = Command::new("rm")
-        .args(&["-rf", "/mnt/root/var/*"])
+        .args(["-rf", "/mnt/root/var/*"])
         .status()
         .context("Failed to delete /mnt/root/var/*")?;
 
@@ -909,7 +909,7 @@ fn migrate_home_data() -> Result<()> {
 
     // Use rsync to copy with progress
     let status = Command::new("rsync")
-        .args(&[
+        .args([
             "-avx",
             "--progress",
             "/mnt/root/home/",
@@ -924,7 +924,7 @@ fn migrate_home_data() -> Result<()> {
 
     println!("  Deleting /mnt/root/home/*...");
     let status = Command::new("rm")
-        .args(&["-rf", "/mnt/root/home/*"])
+        .args(["-rf", "/mnt/root/home/*"])
         .status()
         .context("Failed to delete /mnt/root/home/*")?;
 
@@ -938,7 +938,7 @@ fn migrate_home_data() -> Result<()> {
 
 fn get_uuid(device: &str) -> Result<String> {
     let output = Command::new("blkid")
-        .args(&["-s", "UUID", "-o", "value", device])
+        .args(["-s", "UUID", "-o", "value", device])
         .output()
         .context(format!("Failed to get UUID for {}", device))?;
 
